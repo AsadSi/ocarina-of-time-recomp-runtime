@@ -397,7 +397,16 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
     }
 
     graphics_shutdown_ready.wait();
+#ifdef __APPLE__
+    // RT64's Metal backend over-releases autoreleased objects, so any thread that used it crashes when
+    // it exits, this one included. recomp::start ends the process once saving has finished, so keep
+    // this thread and the renderer alive until then.
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::hours(1));
+    }
+#else
     renderer_context->shutdown();
+#endif
 }
 
 #define VI_CTRL_TYPE_16             0x00002

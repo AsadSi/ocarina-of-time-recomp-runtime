@@ -1,5 +1,8 @@
 #include <cstdio>
 #include <cstdlib>
+#ifdef __APPLE__
+#include <unistd.h>
+#endif
 #include <cstring>
 #include <memory>
 #include <cmath>
@@ -825,6 +828,16 @@ void recomp::start(
     graphics_shutdown_ready.signal();
 
     game_thread.join();
+
+#ifdef __APPLE__
+    // The graphics thread and renderer are left running (see gfx_thread_func) because tearing them down
+    // crashes on Metal. End the process as soon as every save has been written instead.
+    ultramodern::join_saving_thread();
+    fflush(stdout);
+    fflush(stderr);
+    _exit(EXIT_SUCCESS);
+#endif
+
     ultramodern::join_event_threads();
     ultramodern::join_thread_cleaner_thread();
     ultramodern::join_saving_thread();
