@@ -44,6 +44,7 @@ struct ViState {
     uint32_t state;
     uint32_t control;
     int retrace_count = 1;
+    float y_factor = 1.0f;
 };
 
 #define VI_STATE_BLACK 0x20
@@ -78,7 +79,9 @@ static struct {
                 hStart = 0;
             }
 
-            uint32_t yScale = field_regs->yScale;
+            // Apply the osViSetYScale factor to the mode's nominal scale, as libultra's __osViSwapContext does.
+            constexpr uint32_t VI_SCALE_MASK = 0xFFF;
+            uint32_t yScale = (uint32_t)(next_state->y_factor * (field_regs->yScale & VI_SCALE_MASK)) | (field_regs->yScale & ~VI_SCALE_MASK);
             if (next_state->state & VI_STATE_REPEATLINE) {
                 yScale = 0;
                 origin = framebuffer;
@@ -98,7 +101,7 @@ static struct {
             regs.VI_V_BURST_REG = field_regs->vBurst;
             regs.VI_INTR_REG = field_regs->vIntr;
             regs.VI_X_SCALE_REG = common_regs->xScale; // TODO implement osViSetXScale
-            regs.VI_Y_SCALE_REG = yScale; // TODO implement osViSetYScale
+            regs.VI_Y_SCALE_REG = yScale;
             regs.VI_STATUS_REG = next_state->control;
             
             // Swap VI states.
@@ -168,6 +171,10 @@ extern "C" void osViSetEvent(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, u32 ret
 
 uint64_t total_vis = 0;
 
+static uint32_t vi_refresh_rate() {
+    return (events_context.vi.regs.VI_V_SYNC_REG & 0x3FF) >= 600 ? 50 : 60;
+}
+
 
 extern std::atomic_bool exited;
 extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
@@ -185,7 +192,8 @@ void vi_thread_func() {
 
     while (!exited) {
         // Determine the next VI time (more accurate than adding 16ms each VI interrupt)
-        auto next = ultramodern::get_start() + (total_vis * 1000000us) / (60 * ultramodern::get_speed_multiplier());
+        const uint32_t refresh_rate = vi_refresh_rate();
+        auto next = ultramodern::get_start() + (total_vis * 1000000us) / (refresh_rate * ultramodern::get_speed_multiplier());
         //if (next > std::chrono::high_resolution_clock::now()) {
         //    printf("Sleeping for %" PRIu64 " us to get from %" PRIu64 " us to %" PRIu64 " us \n",
         //        (next - std::chrono::high_resolution_clock::now()) / 1us,
@@ -202,7 +210,7 @@ void vi_thread_func() {
         ultramodern::sleep_until(next);
         auto time_now = ultramodern::time_since_start();
         // Calculate how many VIs have passed
-        uint64_t new_total_vis = (time_now * (60 * ultramodern::get_speed_multiplier()) / 1000ms) + 1;
+        uint64_t new_total_vis = (time_now * (refresh_rate * ultramodern::get_speed_multiplier()) / 1000ms) + 1;
         if (new_total_vis > total_vis + 1) {
             //printf("Skipped % " PRId64 " frames in VI interupt thread!\n", new_total_vis - total_vis - 1);
         }
@@ -533,9 +541,8 @@ extern "C" void osViSetXScale(float scale) {
 }
 
 extern "C" void osViSetYScale(float scale) {
-    if (scale != 1.0f) {
-        assert(false);
-    }
+    std::lock_guard lock{ events_context.message_mutex };
+    events_context.vi.get_next_state()->y_factor = scale;
 }
 
 extern "C" PTR(void) osViGetNextFramebuffer() {
